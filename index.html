@@ -1,0 +1,1819 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="ブラウザ上でスクリーンショット画像とテンプレート画像を用いたテンプレートマッチング検証を行うツール" />
+<!--
+DEV_NOTES_BEGIN
+Project: Image Match Tool for GitHub Pages
+Public Version: 1.0.0
+Distribution Variant: Local-bundled vendor path mode
+Visibility: This block is intentionally hidden from the rendered page and retained in source for future maintenance.
+Primary Goals:
+  1) Multiple screenshots can be loaded and switched.
+  2) Multiple templates can be loaded, renamed, saved, and switched.
+  3) ROI can be created / moved / resized on the preview.
+  4) Shift + drag creates a template from the screenshot.
+  5) OpenCV.js matchTemplate runs automatically after changes.
+  6) Python call examples are generated from the current UI state.
+Editing Guidance for humans or LLMs:
+  - Preserve element IDs used by JavaScript unless intentionally refactoring both HTML and JS together.
+  - Keep visible copy professional and concise for public release.
+  - If UI layout is modified, test overlap among: templateManagerDetails, settingsCard, resultCard, bottomDrawer.
+  - If upload logic is modified, test: srcDrop/srcInput, tplDrop/tplInput, sourceSelector, prev/next buttons, Shift + drag.
+  - If Python command generation is modified, verify threshold/crop/mask/boolean options.
+  - This file expects local libraries under ./vendor/opencv/opencv.js and ./vendor/jszip/jszip.min.js
+Suggested change log format for future edits:
+  Version / Purpose / Major UI changes / Major JS changes / Known issues
+DEV_NOTES_END
+-->
+  <title>画像検知ツール v1.0</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #d7dce3;
+      --primary: #2563eb;
+      --success: #16a34a;
+      --danger: #dc2626;
+      --warning-bg: #fff3cd;
+      --warning-fg: #856404;
+      --shadow: 0 6px 20px rgba(17, 24, 39, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    body { padding: 12px; }
+
+    .app {
+      height: calc(100vh - 24px);
+      max-width: 1680px;
+      margin: 0 auto;
+      background: var(--panel);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px 10px 18px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+    }
+    .titleWrap h1 {
+      font-size: 22px;
+      margin: 0 0 4px;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    #status {
+      min-width: 280px;
+      max-width: 760px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: var(--warning-bg);
+      color: var(--warning-fg);
+      font-weight: 700;
+      font-size: 13px;
+      text-align: center;
+    }
+    #status.ready {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    .workspace {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 390px;
+      gap: 14px;
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .mainPanel,
+    .sidebar {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .sidebar {
+      overflow: auto;
+      padding-right: 2px;
+      position: relative;
+      z-index: 0;
+    }
+
+    .card,
+    .foldCard {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 2px 8px rgba(17, 24, 39, 0.04);
+    }
+
+    .mainCard {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      gap: 10px;
+    }
+
+    .sideCard {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 0;
+    }
+
+    .rowHead {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .headLeft {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .headTitle, .sideTitle {
+      font-size: 16px;
+      font-weight: 700;
+      margin: 0;
+    }
+    .sideTitle { font-size: 14px; }
+
+    .modePill,
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #eef6ff;
+      color: #0b5ed7;
+    }
+    .badge.gray { background: #f1f5f9; color: #475569; }
+
+    .toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: stretch;
+      min-width: 340px;
+    }
+    .toolbarTop {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .toolbarBottom {
+      display: grid;
+      grid-template-columns: auto minmax(220px, 360px) auto;
+      gap: 8px;
+      align-items: center;
+      justify-content: end;
+    }
+
+    .dropzone {
+      border: 2px dashed #93a3b8;
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #fafcff;
+      color: #334155;
+      cursor: pointer;
+      user-select: none;
+      transition: 0.15s ease;
+      font-size: 13px;
+      line-height: 1.35;
+      min-width: 220px;
+    }
+    .dropzone:hover,
+    .dropzone.dragover {
+      border-color: var(--primary);
+      background: #eef6ff;
+    }
+    input[type="file"] { display: none; }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--primary);
+      color: white;
+    }
+    button.secondary { background: #64748b; }
+    button.light {
+      background: #eef2f7;
+      color: #334155;
+      border: 1px solid var(--border);
+    }
+    button.compact { padding: 8px 10px; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .sourceSelector {
+      width: 100%;
+      min-width: 0;
+      max-width: none;
+    }
+    #prevSourceBtn, #nextSourceBtn { white-space: nowrap; }
+
+    .canvasShell {
+      flex: 1;
+      min-height: 0;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    canvas.preview {
+      display: block;
+      background: white;
+      border: 1px solid #dbe3ec;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+      image-rendering: auto;
+    }
+    #srcPreview { cursor: crosshair; }
+
+    .mainHint {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .fieldGroup { display: flex; flex-direction: column; gap: 6px; }
+    .fieldLabel { font-size: 12px; font-weight: 700; color: #334155; }
+    .fieldLabel.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .miniNote { font-size: 11px; color: var(--muted); font-weight: 500; }
+
+    .inputRow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .miniField { display: flex; flex-direction: column; gap: 4px; }
+    .miniField span { font-size: 11px; color: var(--muted); }
+
+    .toggleRow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .toggleLabel {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    input[type="number"], input[type="text"], select, textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: white;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 140px;
+      font-family: Consolas, Monaco, monospace;
+      line-height: 1.45;
+    }
+
+    .resultBox {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: #fbfcfe;
+      min-height: 120px;
+      white-space: pre-wrap;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 700;
+    }
+    .resultBox.success { color: var(--success); background: #f0fdf4; border-color: #bbf7d0; }
+    .resultBox.error { color: var(--danger); background: #fef2f2; border-color: #fecaca; }
+    .statusMini { font-size: 12px; color: var(--muted); line-height: 1.4; }
+    .hintList {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .foldCard {
+      overflow: visible;
+      position: relative;
+      z-index: 2;
+      flex: 0 0 auto;
+    }
+    .settingsCard,
+    .resultCard {
+      position: relative;
+      z-index: 1;
+      flex: 0 0 auto;
+    }
+    .foldCard summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      user-select: none;
+    }
+    .foldCard summary::-webkit-details-marker { display: none; }
+    .foldHeaderLeft {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .foldHeaderTitle {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .foldHeaderMeta {
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 220px;
+    }
+    .foldChevron {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .foldCard[open] .foldChevron::before { content: '▲ '; }
+    .foldCard:not([open]) .foldChevron::before { content: '▼ '; }
+
+    /* 修正ポイント: 親で高さを固定しすぎず、一覧だけに max-height を与える */
+    .foldBody {
+      border-top: 1px solid var(--border);
+      padding: 12px 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: visible;
+    }
+
+    .thumbShell {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fafc;
+      min-height: 120px;
+      max-height: 150px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 8px;
+      flex: 0 0 auto;
+    }
+    #tplPreview {
+      max-width: 100%;
+      max-height: 140px;
+      width: auto;
+      height: auto;
+      cursor: default;
+    }
+
+    .templateToolbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+
+    /* 修正ポイント: スクロールバー下端が見切れないように、
+       一覧自身に固定的な最大高さを与えて内部スクロール */
+    .templateList {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fbfcfe;
+      overflow: auto;
+      min-height: 120px;
+      max-height: 320px;
+      padding: 8px 8px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 0 0 auto;
+      min-width: 0;
+      position: relative;
+      z-index: 3;
+      scrollbar-gutter: stable both-edges;
+    }
+
+    .templateItem {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: white;
+      padding: 8px;
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+    .templateMeta {
+      grid-column: 3 / 5;
+      font-size: 11px;
+      color: var(--muted);
+      padding-left: 2px;
+    }
+    .templateNameInput {
+      min-width: 0;
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+    }
+    .templateDeleteBtn {
+      padding: 6px 8px;
+      font-size: 12px;
+      background: #eef2f7;
+      color: #334155;
+      border: 1px solid var(--border);
+    }
+
+    .bottomDrawer {
+      border-top: 1px solid var(--border);
+      background: #fbfcfe;
+      flex: 0 0 auto;
+    }
+    .drawerSummary {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 14px;
+    }
+    .drawerLabel {
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      white-space: nowrap;
+    }
+    .codeOneLine {
+      min-width: 0;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      color: #334155;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .drawerButtons { display: flex; gap: 8px; flex-wrap: wrap; }
+    .drawerDetails {
+      border-top: 1px solid var(--border);
+      padding: 12px 14px 14px;
+      display: none;
+      background: white;
+    }
+    .drawerDetails.open { display: block; }
+    .drawerGrid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .drawerGrid2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .advancedBlock {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fbfcfe;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .advancedBlock summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #334155;
+      user-select: none;
+    }
+    .advancedBlock summary::-webkit-details-marker { display: none; }
+    .advancedBody {
+      padding: 0 12px 12px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .codeToolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    #srcCanvas, #tplCanvas { display: none; }
+
+    @media (max-width: 1450px) {
+      .workspace { grid-template-columns: minmax(0, 1fr) 360px; }
+      .drawerGrid, .advancedBody { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .toolbar { min-width: 280px; }
+    }
+
+    @media (max-width: 1180px) {
+      .workspace {
+        grid-template-columns: 1fr;
+        overflow: auto;
+      }
+      .sidebar {
+        overflow: visible;
+      }
+      .app { height: auto; min-height: calc(100vh - 24px); }
+      .mainCard { min-height: 560px; }
+      .drawerSummary,
+      .drawerGrid,
+      .drawerGrid2,
+      .advancedBody,
+      .inputRow,
+      .templateToolbar {
+        grid-template-columns: 1fr;
+      }
+      .toolbar { min-width: 100%; }
+      .toolbarTop { justify-content: flex-start; }
+      .toolbarBottom {
+        display: grid;
+        grid-template-columns: 1fr;
+        justify-content: flex-start;
+      }
+      .dropzone { min-width: 100%; }
+      .templateItem {
+        grid-template-columns: auto auto minmax(0, 1fr);
+      }
+      .templateDeleteBtn { grid-column: 1 / 4; }
+      .templateMeta { grid-column: 1 / 4; }
+      .foldHeaderMeta { max-width: 100%; }
+      .templateList { max-height: 300px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="titleWrap">
+        <h1>画像検知ツール v1.0</h1>
+        <p class="subtitle">スクリーンショット画像とテンプレート画像を用いたテンプレートマッチング検証を、ブラウザ上で快適に行うためのツールです。読み込んだ画像はブラウザ内で処理され、サーバーには送信されません。</p>
+      </div>
+      <div id="status">OpenCV.js を読み込み中です。しばらくお待ちください。</div>
+    </div>
+
+    <div class="workspace">
+      <div class="mainPanel">
+        <div class="card mainCard">
+          <div class="rowHead">
+            <div class="headLeft">
+              <div class="headTitle">検索対象画像</div>
+              <span class="modePill" id="interactionModeLabel">通常</span>
+              <span class="badge gray" id="imageSizeBadge">未読込</span>
+              <span class="badge gray" id="sourceCountBadge">0枚</span>
+            </div>
+            <div class="toolbar">
+              <div class="toolbarTop">
+                <div class="dropzone" id="srcDrop">
+                  スクショをドラッグ＆ドロップ（複数可）<br>
+                  <span style="font-size:12px; color:#64748b;">またはクリックして選択</span>
+                </div>
+                <button class="secondary" id="clearRoiBtn" type="button">ROIクリア</button>
+              </div>
+              <div class="toolbarBottom">
+                <button class="light compact" id="prevSourceBtn" type="button">◀ 前</button>
+                <select id="sourceSelector" class="sourceSelector"></select>
+                <button class="light compact" id="nextSourceBtn" type="button">次 ▶</button>
+              </div>
+            </div>
+            <input type="file" id="srcInput" accept="image/*" multiple />
+          </div>
+
+          <div class="canvasShell" id="srcCanvasShell">
+            <canvas id="srcPreview" class="preview"></canvas>
+          </div>
+
+          <div class="mainHint">
+            <span>ドラッグ: 検索範囲（ROI）を作成</span>
+            <span>ROI 内ドラッグ: 位置を移動</span>
+            <span>ROI の角・辺ドラッグ: サイズを調整</span>
+            <span><b>Shift + ドラッグ</b>: その範囲をテンプレに切り出し</span>
+            <span>検知結果はプレビュー上に重ねて表示</span>
+          </div>
+
+          <canvas id="srcCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="sidebar">
+        <details class="foldCard" id="templateManagerDetails">
+          <summary>
+            <div class="foldHeaderLeft">
+              <div class="foldHeaderTitle">テンプレート画像</div>
+              <div class="foldHeaderMeta" id="templateFoldMeta">0件 / 閉じています</div>
+            </div>
+            <div class="foldChevron">テンプレ管理</div>
+          </summary>
+
+          <div class="foldBody">
+            <div class="dropzone" id="tplDrop">
+              テンプレをドラッグ＆ドロップ（複数可）<br>
+              <span style="font-size:12px; color:#64748b;">またはクリックして選択</span>
+            </div>
+            <input type="file" id="tplInput" accept="image/*" multiple />
+
+            <div class="thumbShell">
+              <canvas id="tplPreview" class="preview"></canvas>
+            </div>
+            <div class="statusMini" id="templateStatus">テンプレート未設定（ファイル追加、または Shift + ドラッグで作成）</div>
+
+            <div class="templateToolbar">
+              <button class="light" id="saveSelectedTemplatesBtn" type="button">選択テンプレ保存</button>
+              <button class="light" id="clearTemplateChecksBtn" type="button">保存選択クリア</button>
+            </div>
+
+            <div class="templateList" id="templateList"></div>
+            <div class="statusMini">ラジオボタンで検知対象テンプレートを選択し、チェックボックスで保存対象を指定できます。テンプレート名はその場で編集できます。</div>
+            <canvas id="tplCanvas"></canvas>
+          </div>
+        </details>
+
+        <div class="card sideCard settingsCard">
+          <h2 class="sideTitle">検知設定</h2>
+          <div class="fieldGroup">
+            <label class="fieldLabel" for="threshold">検知しきい値 (0.0 ~ 1.0)</label>
+            <input type="number" id="threshold" value="0.80" step="0.01" min="0" max="1">
+          </div>
+
+          <div class="toggleRow">
+            <label class="toggleLabel" for="useRoi">
+              <input type="checkbox" id="useRoi">
+              ROI（検索範囲）を指定して検知する
+            </label>
+          </div>
+
+          <div class="fieldGroup">
+            <div class="fieldLabel">ROI座標（元画像ピクセル）</div>
+            <div class="inputRow">
+              <label class="miniField"><span>x</span><input type="number" id="roiX" value="0" min="0" step="1"></label>
+              <label class="miniField"><span>y</span><input type="number" id="roiY" value="0" min="0" step="1"></label>
+              <label class="miniField"><span>w</span><input type="number" id="roiW" value="0" min="0" step="1"></label>
+              <label class="miniField"><span>h</span><input type="number" id="roiH" value="0" min="0" step="1"></label>
+            </div>
+          </div>
+
+          <div class="statusMini" id="autoRunStatus">自動検知待機中</div>
+        </div>
+
+        <div class="card sideCard resultCard">
+          <h2 class="sideTitle">検知結果</h2>
+          <div id="resultInfo" class="resultBox">画像アップロード待機中</div>
+          <ul class="hintList">
+            <li>テンプレート管理は折りたたみ表示に対応しています。必要に応じて展開してください。</li>
+            <li>スクリーンショットを切り替えても、ROI とアクティブテンプレートの設定を保持します。</li>
+            <li>ROI を作成すると、Python 呼び出し例の crop オプションが自動で有効になります。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div style="padding: 0 14px 8px; font-size: 11px; color: #6b7280;">
+  このページはローカル同梱のライブラリ（OpenCV.js / JSZip）を前提としています。詳細は <code>THIRD_PARTY_NOTICES.md</code> および <code>licenses/</code> を参照してください。
+</div>
+      <div class="bottomDrawer">
+      <div class="drawerSummary">
+        <div class="drawerLabel">Python呼び出し</div>
+        <div class="codeOneLine" id="pythonOneLine">self.isContainTemplate(template_path="template.png")</div>
+        <div class="drawerButtons">
+          <button class="light" id="copyOneLineBtn" type="button">1行コピー</button>
+          <button id="toggleDrawerBtn" type="button">詳細を開く</button>
+        </div>
+      </div>
+
+      <div class="drawerDetails" id="drawerDetails">
+        <div class="drawerGrid2">
+          <div class="fieldGroup">
+            <label class="fieldLabel">呼び出し先</label>
+            <input type="text" id="callTarget" value="self.isContainTemplate">
+          </div>
+          <div class="fieldGroup">
+            <label class="fieldLabel">template_path</label>
+            <input type="text" id="templatePathInput" value="template.png">
+          </div>
+        </div>
+
+        <div class="drawerGrid">
+          <div class="fieldGroup">
+            <label class="fieldLabel row"><input type="checkbox" id="argThresholdOn" checked> threshold <span class="miniNote">数値</span></label>
+            <input type="number" id="argThresholdValue" value="0.80" min="0" max="1" step="0.01">
+          </div>
+          <div class="fieldGroup">
+            <label class="fieldLabel row"><input type="checkbox" id="argCropOn"> crop <span class="miniNote">ROI / 検知結果 / 手入力</span></label>
+            <select id="argCropSource">
+              <option value="roi" selected>現在のROIを使う</option>
+              <option value="detected">検知結果の矩形を使う</option>
+              <option value="manual">手入力を使う</option>
+            </select>
+          </div>
+          <div class="fieldGroup">
+            <label class="fieldLabel">crop 手入力 (x1,y1,x2,y2)</label>
+            <input type="text" id="argCropManual" value="0,0,0,0">
+          </div>
+          <div class="fieldGroup">
+            <label class="fieldLabel row"><input type="checkbox" id="argMaskPathOn"> mask_path <span class="miniNote">任意</span></label>
+            <input type="text" id="argMaskPathValue" value="mask.png" placeholder="mask.png">
+          </div>
+        </div>
+
+        <details class="advancedBlock">
+          <summary>詳細オプションを表示</summary>
+          <div class="advancedBody">
+            <div class="fieldGroup">
+              <label class="fieldLabel row"><input type="checkbox" id="argUseGrayOn" checked> use_gray <span class="miniNote">bool</span></label>
+              <select id="argUseGrayValue"><option value="True" selected>True</option><option value="False">False</option></select>
+            </div>
+            <div class="fieldGroup">
+              <label class="fieldLabel row"><input type="checkbox" id="argShowValueOn" checked> show_value <span class="miniNote">bool</span></label>
+              <select id="argShowValueValue"><option value="False" selected>False</option><option value="True">True</option></select>
+            </div>
+            <div class="fieldGroup">
+              <label class="fieldLabel row"><input type="checkbox" id="argShowPositionOn" checked> show_position <span class="miniNote">bool</span></label>
+              <select id="argShowPositionValue"><option value="True" selected>True</option><option value="False">False</option></select>
+            </div>
+            <div class="fieldGroup">
+              <label class="fieldLabel row"><input type="checkbox" id="argShowOnlyTrueRectOn" checked> show_only_true_rect <span class="miniNote">bool</span></label>
+              <select id="argShowOnlyTrueRectValue"><option value="True" selected>True</option><option value="False">False</option></select>
+            </div>
+            <div class="fieldGroup">
+              <label class="fieldLabel row"><input type="checkbox" id="argMsOn" checked> ms <span class="miniNote">表示時間</span></label>
+              <input type="number" id="argMsValue" value="2000" min="0" step="100">
+            </div>
+          </div>
+        </details>
+
+        <div class="codeToolbar">
+          <div class="statusMini" id="codeHint">スクリーンショットの切替時も Python 呼び出し例を即時更新します。アクティブテンプレート名は template_path に自動反映されます。</div>
+          <button id="copyCodeBtn" type="button">整形版をコピー</button>
+        </div>
+        <textarea id="pythonPreview" readonly></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script defer src="./vendor/jszip/jszip.min.js"></script>
+  <script>
+    let srcImage = new Image();
+    let tplImage = new Image();
+    let srcLoaded = false;
+    let tplLoaded = false;
+    let openCvReady = false;
+
+    let sourceEntries = [];
+    let currentSourceIndex = -1;
+
+    let templateEntries = [];
+    let activeTemplateIndex = -1;
+    let generatedTemplateCounter = 1;
+
+    let roi = { x: 0, y: 0, w: 0, h: 0 };
+    let detectionOverlay = { success: false, score: 0, rect: null, roiRect: null, active: false };
+
+    const AUTO_RUN_DELAY = 80;
+    const HANDLE_SIZE = 10;
+    const MIN_BOX_SIZE = 4;
+    let detectTimer = null;
+    let drawerOpen = false;
+
+    let interaction = {
+      active: false,
+      type: null,
+      handle: null,
+      startX: 0,
+      startY: 0,
+      currentX: 0,
+      currentY: 0,
+      origRoi: null,
+      templateRect: null
+    };
+
+    const srcPreviewCanvas = document.getElementById('srcPreview');
+    const tplPreviewCanvas = document.getElementById('tplPreview');
+    const srcCanvasShell = document.getElementById('srcCanvasShell');
+    const resultInfo = document.getElementById('resultInfo');
+    const drawerDetails = document.getElementById('drawerDetails');
+    const toggleDrawerBtn = document.getElementById('toggleDrawerBtn');
+    const sourceSelector = document.getElementById('sourceSelector');
+    const templateList = document.getElementById('templateList');
+    const templateManagerDetails = document.getElementById('templateManagerDetails');
+    const templateFoldMeta = document.getElementById('templateFoldMeta');
+
+    function updateStatus(text, ready = false) {
+      const el = document.getElementById('status');
+      el.innerText = text;
+      el.classList.toggle('ready', ready);
+    }
+    function updateAutoRunStatus(text) { document.getElementById('autoRunStatus').innerText = text; }
+    function setResult(text, kind = 'neutral') {
+      resultInfo.innerText = text;
+      resultInfo.className = 'resultBox';
+      if (kind === 'success') resultInfo.classList.add('success');
+      if (kind === 'error') resultInfo.classList.add('error');
+    }
+    function setInteractionModeLabel(text) { document.getElementById('interactionModeLabel').innerText = text; }
+
+    function currentSourceEntry() { return (currentSourceIndex >= 0 && currentSourceIndex < sourceEntries.length) ? sourceEntries[currentSourceIndex] : null; }
+    function currentTemplateEntry() { return (activeTemplateIndex >= 0 && activeTemplateIndex < templateEntries.length) ? templateEntries[activeTemplateIndex] : null; }
+
+    function updateTemplateFoldMeta() {
+      const count = templateEntries.length;
+      const active = currentTemplateEntry();
+      const state = templateManagerDetails.open ? '展開中' : '折りたたみ中';
+      templateFoldMeta.textContent = active ? `${count}件 / ${active.name} / ${state}` : `${count}件 / ${state}`;
+    }
+
+    function setImageSizeBadge() {
+      const badge = document.getElementById('imageSizeBadge');
+      if (!srcLoaded) { badge.innerText = '未読込'; return; }
+      const entry = currentSourceEntry();
+      const prefix = entry ? `${currentSourceIndex + 1}/${sourceEntries.length}` : '-/-';
+      badge.innerText = `${prefix} | ${srcImage.naturalWidth || srcImage.width} × ${srcImage.naturalHeight || srcImage.height}`;
+    }
+
+    function updateSourceControls() {
+      const count = sourceEntries.length;
+      document.getElementById('sourceCountBadge').innerText = `${count}枚`;
+      sourceSelector.innerHTML = '';
+      sourceEntries.forEach((entry, idx) => {
+        const opt = document.createElement('option');
+        opt.value = idx;
+        opt.textContent = `${idx + 1}. ${entry.name}`;
+        sourceSelector.appendChild(opt);
+      });
+      sourceSelector.disabled = count === 0;
+      document.getElementById('prevSourceBtn').disabled = count <= 1;
+      document.getElementById('nextSourceBtn').disabled = count <= 1;
+      if (currentSourceIndex >= 0 && currentSourceIndex < count) sourceSelector.value = String(currentSourceIndex);
+    }
+
+    function updateTemplateStatus() {
+      const entry = currentTemplateEntry();
+      const status = document.getElementById('templateStatus');
+      if (!entry) status.innerText = 'テンプレート未設定（ファイル追加、または Shift + ドラッグで作成）';
+      else status.innerText = `アクティブ: ${entry.name} (${entry.width} × ${entry.height}) | 全${templateEntries.length}件`;
+      updateTemplateFoldMeta();
+    }
+
+    function refreshTemplateList() {
+      templateList.innerHTML = '';
+      if (templateEntries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'statusMini';
+        empty.textContent = 'テンプレートはまだ登録されていません。ファイルを追加するか、Shift + ドラッグで作成してください。';
+        templateList.appendChild(empty);
+        updateTemplateStatus();
+        return;
+      }
+      templateEntries.forEach((entry, idx) => {
+        const row = document.createElement('div');
+        row.className = 'templateItem';
+
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'activeTemplate';
+        radio.checked = idx === activeTemplateIndex;
+        radio.title = '検知に使うテンプレ';
+        radio.addEventListener('change', async () => { if (radio.checked) await switchTemplate(idx, 'テンプレ切替'); });
+
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = !!entry.saveChecked;
+        check.title = '保存対象として選択';
+        check.addEventListener('change', () => { entry.saveChecked = check.checked; });
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'templateNameInput';
+        nameInput.value = entry.name;
+        nameInput.addEventListener('input', () => {
+          const v = nameInput.value.trim();
+          if (v) entry.name = v;
+          if (idx === activeTemplateIndex) {
+            document.getElementById('templatePathInput').value = entry.name;
+            updatePythonPreview();
+            updateTemplateStatus();
+          }
+        });
+        nameInput.addEventListener('blur', () => { if (!nameInput.value.trim()) nameInput.value = entry.name; });
+
+        const del = document.createElement('button');
+        del.className = 'templateDeleteBtn';
+        del.type = 'button';
+        del.textContent = '削除';
+        del.addEventListener('click', async () => {
+          templateEntries.splice(idx, 1);
+          if (templateEntries.length === 0) {
+            activeTemplateIndex = -1;
+            tplLoaded = false;
+            tplImage = new Image();
+            const c = document.getElementById('tplCanvas');
+            const ctx = c.getContext('2d');
+            ctx.clearRect(0, 0, c.width || 1, c.height || 1);
+            c.width = 1; c.height = 1;
+            clearDetectionOverlay();
+            updateAllPreviews();
+            updatePythonPreview();
+            scheduleDetection('テンプレ削除');
+            return;
+          }
+          const newIndex = Math.min(idx, templateEntries.length - 1);
+          await switchTemplate(newIndex, 'テンプレ削除後切替');
+        });
+
+        const meta = document.createElement('div');
+        meta.className = 'templateMeta';
+        meta.textContent = `${entry.generated ? '生成' : '読込'} / ${entry.width}×${entry.height}`;
+
+        row.appendChild(radio);
+        row.appendChild(check);
+        row.appendChild(nameInput);
+        row.appendChild(del);
+        row.appendChild(meta);
+        templateList.appendChild(row);
+      });
+      updateTemplateStatus();
+    }
+
+    function clearDetectionOverlay() {
+      detectionOverlay = { success: false, score: 0, rect: null, roiRect: null, active: false };
+    }
+
+    function bindDropzone(dropEl, inputEl, onFiles) {
+      dropEl.addEventListener('click', () => inputEl.click());
+      dropEl.addEventListener('dragover', (e) => { e.preventDefault(); dropEl.classList.add('dragover'); });
+      dropEl.addEventListener('dragleave', () => dropEl.classList.remove('dragover'));
+      dropEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropEl.classList.remove('dragover');
+        const files = Array.from(e.dataTransfer.files || []);
+        if (files.length) onFiles(files);
+      });
+      inputEl.addEventListener('change', (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length) onFiles(files);
+        inputEl.value = '';
+      });
+    }
+
+    function readImageFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ name: file.name, dataUrl: reader.result });
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+    function loadImageFromDataUrl(imgObj, dataUrl) {
+      return new Promise((resolve, reject) => {
+        imgObj.onload = resolve;
+        imgObj.onerror = reject;
+        imgObj.src = dataUrl;
+      });
+    }
+    function drawToHiddenCanvas(imgObj, canvasId) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext('2d');
+      const iw = imgObj.naturalWidth || imgObj.width;
+      const ih = imgObj.naturalHeight || imgObj.height;
+      canvas.width = iw;
+      canvas.height = ih;
+      ctx.clearRect(0, 0, iw, ih);
+      ctx.drawImage(imgObj, 0, 0);
+    }
+
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function normalizeRect(rect) {
+      const x0 = Math.min(rect.x, rect.x + rect.w);
+      const y0 = Math.min(rect.y, rect.y + rect.h);
+      const x1 = Math.max(rect.x, rect.x + rect.w);
+      const y1 = Math.max(rect.y, rect.y + rect.h);
+      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+    function setRoiInputs() {
+      document.getElementById('roiX').value = roi.x;
+      document.getElementById('roiY').value = roi.y;
+      document.getElementById('roiW').value = roi.w;
+      document.getElementById('roiH').value = roi.h;
+    }
+    function ensureCropCheckedForRoi() {
+      if (roi.w > 0 && roi.h > 0) {
+        const cropOn = document.getElementById('argCropOn');
+        if (!cropOn.checked) {
+          cropOn.checked = true;
+          document.getElementById('argCropSource').value = 'roi';
+        }
+      }
+    }
+    function clampRoiToCurrentImage() {
+      if (!srcLoaded) return;
+      const iw = srcImage.naturalWidth || srcImage.width;
+      const ih = srcImage.naturalHeight || srcImage.height;
+      roi.x = clamp(roi.x, 0, iw);
+      roi.y = clamp(roi.y, 0, ih);
+      roi.w = clamp(roi.w, 0, iw - roi.x);
+      roi.h = clamp(roi.h, 0, ih - roi.y);
+      setRoiInputs();
+    }
+    function getRoiHandles(rect) {
+      const x = rect.x, y = rect.y, w = rect.w, h = rect.h;
+      const mx = x + w / 2, my = y + h / 2;
+      return {
+        nw: { x, y }, n: { x: mx, y }, ne: { x: x + w, y }, e: { x: x + w, y: my },
+        se: { x: x + w, y: y + h }, s: { x: mx, y: y + h }, sw: { x, y: y + h }, w: { x, y: my }
+      };
+    }
+    function hitTestHandle(x, y, rect) {
+      if (rect.w <= 0 || rect.h <= 0) return null;
+      const handles = getRoiHandles(rect);
+      for (const [name, p] of Object.entries(handles)) {
+        if (Math.abs(x - p.x) <= HANDLE_SIZE && Math.abs(y - p.y) <= HANDLE_SIZE) return name;
+      }
+      return null;
+    }
+    function isPointInRect(x, y, rect) {
+      return rect.w > 0 && rect.h > 0 && x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+    }
+    function constrainRectToImage(rect) {
+      if (!srcLoaded) return rect;
+      const iw = srcImage.naturalWidth || srcImage.width;
+      const ih = srcImage.naturalHeight || srcImage.height;
+      const x = clamp(rect.x, 0, iw);
+      const y = clamp(rect.y, 0, ih);
+      const w = clamp(rect.w, 0, iw - x);
+      const h = clamp(rect.h, 0, ih - y);
+      return { x, y, w, h };
+    }
+    function resizeRectFromHandle(orig, handle, x, y) {
+      let left = orig.x, top = orig.y, right = orig.x + orig.w, bottom = orig.y + orig.h;
+      if (handle.includes('n')) top = y;
+      if (handle.includes('s')) bottom = y;
+      if (handle.includes('w')) left = x;
+      if (handle.includes('e')) right = x;
+      return constrainRectToImage(normalizeRect({ x: left, y: top, w: right - left, h: bottom - top }));
+    }
+    function moveRect(orig, dx, dy) {
+      const iw = srcImage.naturalWidth || srcImage.width;
+      const ih = srcImage.naturalHeight || srcImage.height;
+      return { x: clamp(orig.x + dx, 0, iw - orig.w), y: clamp(orig.y + dy, 0, ih - orig.h), w: orig.w, h: orig.h };
+    }
+    function fitCanvasToShell(canvas, shell, naturalW, naturalH, padding = 10) {
+      const availableW = Math.max(120, shell.clientWidth - padding * 2);
+      const availableH = Math.max(120, shell.clientHeight - padding * 2);
+      const scale = Math.min(availableW / naturalW, availableH / naturalH, 1);
+      canvas.style.width = `${Math.round(naturalW * scale)}px`;
+      canvas.style.height = `${Math.round(naturalH * scale)}px`;
+    }
+    function fitTemplateCanvas() {
+      if (!tplLoaded) return;
+      const shell = tplPreviewCanvas.parentElement;
+      fitCanvasToShell(tplPreviewCanvas, shell, tplPreviewCanvas.width, tplPreviewCanvas.height, 8);
+    }
+    function drawLabel(ctx, text, x, y, bgColor) {
+      ctx.save();
+      ctx.font = 'bold 18px Segoe UI';
+      const padX = 8;
+      const width = Math.ceil(ctx.measureText(text).width) + padX * 2;
+      const height = 26;
+      let drawX = x;
+      let drawY = y - height - 6;
+      if (drawY < 0) drawY = y + 6;
+      if (drawX + width > ctx.canvas.width) drawX = Math.max(0, ctx.canvas.width - width - 4);
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(drawX, drawY, width, height);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(text, drawX + padX, drawY + 18);
+      ctx.restore();
+    }
+    function drawPreview(imgObj, canvas, opts = {}) {
+      const { overlayRoi = false, overlayTemplateRect = false, sourceCanvas = false } = opts;
+      const ctx = canvas.getContext('2d');
+      const iw = imgObj.naturalWidth || imgObj.width;
+      const ih = imgObj.naturalHeight || imgObj.height;
+      canvas.width = iw;
+      canvas.height = ih;
+      ctx.clearRect(0, 0, iw, ih);
+      ctx.drawImage(imgObj, 0, 0);
+      if (sourceCanvas) {
+        if (detectionOverlay.active && detectionOverlay.roiRect) {
+          const rr = detectionOverlay.roiRect;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(37, 99, 235, 0.95)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([8, 5]);
+          ctx.strokeRect(rr.x, rr.y, rr.w, rr.h);
+          ctx.fillStyle = 'rgba(37, 99, 235, 0.07)';
+          ctx.fillRect(rr.x, rr.y, rr.w, rr.h);
+          ctx.restore();
+        }
+        if (detectionOverlay.active && detectionOverlay.success && detectionOverlay.rect) {
+          const r = detectionOverlay.rect;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(220, 38, 38, 0.98)';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(r.x, r.y, r.w, r.h);
+          ctx.fillStyle = 'rgba(220, 38, 38, 0.08)';
+          ctx.fillRect(r.x, r.y, r.w, r.h);
+          drawLabel(ctx, `${(detectionOverlay.score * 100).toFixed(1)}%`, r.x, r.y, 'rgba(220, 38, 38, 0.95)');
+          ctx.restore();
+        }
+      }
+      if (overlayRoi && roi.w > 0 && roi.h > 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(37, 99, 235, 0.95)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 5]);
+        ctx.strokeRect(roi.x, roi.y, roi.w, roi.h);
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.10)';
+        ctx.fillRect(roi.x, roi.y, roi.w, roi.h);
+        const handles = getRoiHandles(roi);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(37, 99, 235, 1)';
+        Object.values(handles).forEach(p => ctx.fillRect(p.x - HANDLE_SIZE / 2, p.y - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE));
+        ctx.restore();
+      }
+      if (overlayTemplateRect && interaction.templateRect && interaction.templateRect.w > 0 && interaction.templateRect.h > 0) {
+        const r = interaction.templateRect;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.98)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.10)';
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.restore();
+      }
+    }
+
+    function runDetection() {
+      if (!openCvReady || !srcLoaded || !tplLoaded || activeTemplateIndex < 0) {
+        updatePythonPreview();
+        return;
+      }
+      const threshold = parseFloat(document.getElementById('threshold').value);
+      const useRoi = document.getElementById('useRoi').checked;
+      const sw = srcImage.naturalWidth || srcImage.width;
+      const sh = srcImage.naturalHeight || srcImage.height;
+      const tw = tplImage.naturalWidth || tplImage.width;
+      const th = tplImage.naturalHeight || tplImage.height;
+      if (tw > sw || th > sh) {
+        clearDetectionOverlay();
+        updateAllPreviews();
+        setResult('❌ エラー: テンプレート画像はスクリーンショットよりも小さい必要があります。', 'error');
+        updateAutoRunStatus('テンプレサイズエラー');
+        updatePythonPreview();
+        return;
+      }
+      let src = null, templ = null, srcGray = null, templGray = null, dst = null, mask = null, searchMat = null;
+      try {
+        updateAutoRunStatus('検知実行中...');
+        src = cv.imread('srcCanvas');
+        templ = cv.imread('tplCanvas');
+        srcGray = new cv.Mat();
+        templGray = new cv.Mat();
+        cv.cvtColor(src, srcGray, cv.COLOR_RGBA2GRAY, 0);
+        cv.cvtColor(templ, templGray, cv.COLOR_RGBA2GRAY, 0);
+        let offsetX = 0, offsetY = 0;
+        if (useRoi) {
+          if (roi.w <= 0 || roi.h <= 0) {
+            clearDetectionOverlay();
+            updateAllPreviews();
+            setResult('❌ ROIが未設定です。スクショ上でドラッグするか、ROI座標を入力してください。', 'error');
+            updateAutoRunStatus('ROI未設定');
+            updatePythonPreview();
+            return;
+          }
+          if (roi.w < templGray.cols || roi.h < templGray.rows) {
+            clearDetectionOverlay();
+            detectionOverlay.active = true;
+            detectionOverlay.roiRect = { ...roi };
+            updateAllPreviews();
+            setResult('❌ ROIがテンプレートより小さいため検知できません。', 'error');
+            updateAutoRunStatus('ROIサイズ不足');
+            updatePythonPreview();
+            return;
+          }
+          const roiRect = new cv.Rect(roi.x, roi.y, roi.w, roi.h);
+          searchMat = srcGray.roi(roiRect);
+          offsetX = roi.x;
+          offsetY = roi.y;
+        } else {
+          searchMat = srcGray;
+        }
+        dst = new cv.Mat();
+        mask = new cv.Mat();
+        cv.matchTemplate(searchMat, templGray, dst, cv.TM_CCOEFF_NORMED, mask);
+        const mm = cv.minMaxLoc(dst, mask);
+        const maxLoc = mm.maxLoc;
+        const maxVal = mm.maxVal;
+        const xstart = maxLoc.x + offsetX;
+        const ystart = maxLoc.y + offsetY;
+        const xend = xstart + templGray.cols;
+        const yend = ystart + templGray.rows;
+        clearDetectionOverlay();
+        detectionOverlay.active = true;
+        detectionOverlay.score = maxVal;
+        detectionOverlay.roiRect = useRoi ? { ...roi } : null;
+        if (maxVal >= threshold) {
+          detectionOverlay.success = true;
+          detectionOverlay.rect = { x: xstart, y: ystart, w: templGray.cols, h: templGray.rows };
+          updateAllPreviews();
+          setResult(`🎯 検知成功！\n一致度: ${(maxVal * 100).toFixed(1)}%\nOpenCV crop 座標: (${xstart}, ${ystart}, ${xend}, ${yend})\n\nPython(OpenCV):\ncrop = img[${ystart}:${yend}, ${xstart}:${xend}]`, 'success');
+          updateAutoRunStatus(`検知成功 (${(maxVal * 100).toFixed(1)}%)`);
+        } else {
+          detectionOverlay.success = false;
+          detectionOverlay.rect = null;
+          updateAllPreviews();
+          setResult(`❌ 検知失敗...\n最大一致度: ${(maxVal * 100).toFixed(1)}%\n設定しきい値: ${(threshold * 100).toFixed(1)}%`, 'error');
+          updateAutoRunStatus(`検知失敗 (${(maxVal * 100).toFixed(1)}%)`);
+        }
+        updatePythonPreview();
+      } catch (err) {
+        console.error(err);
+        clearDetectionOverlay();
+        updateAllPreviews();
+        setResult('❌ 処理中にエラーが発生しました。コンソールを確認してください。', 'error');
+        updateAutoRunStatus('エラー発生');
+        updatePythonPreview();
+      } finally {
+        if (searchMat && searchMat !== srcGray) searchMat.delete();
+        if (src) src.delete();
+        if (templ) templ.delete();
+        if (srcGray) srcGray.delete();
+        if (templGray) templGray.delete();
+        if (dst) dst.delete();
+        if (mask) mask.delete();
+      }
+    }
+
+    function updateCursor(pos, evt) {
+      if (!srcLoaded || interaction.active) return;
+      if (evt && evt.shiftKey) {
+        srcPreviewCanvas.style.cursor = 'crosshair';
+        setInteractionModeLabel('テンプレ切り出し');
+        return;
+      }
+      const handle = hitTestHandle(pos.x, pos.y, roi);
+      if (handle) {
+        const map = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize' };
+        srcPreviewCanvas.style.cursor = map[handle] || 'default';
+        setInteractionModeLabel('ROIリサイズ');
+        return;
+      }
+      if (isPointInRect(pos.x, pos.y, roi)) {
+        srcPreviewCanvas.style.cursor = 'move';
+        setInteractionModeLabel('ROI移動');
+        return;
+      }
+      srcPreviewCanvas.style.cursor = 'crosshair';
+      setInteractionModeLabel('ROI新規作成');
+    }
+
+   
+ function dataUrlToBlob(dataUrl) {
+   const parts = dataUrl.split(',');
+   const mimeMatch = parts[0].match(/data:([^;]+)/);
+   const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+   const binary = atob(parts[1] || '');
+   const len = binary.length;
+   const bytes = new Uint8Array(len);
+   for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+   return new Blob([bytes], { type: mime });
+ }
+
+ function downloadBlob(blob, filename) {
+   const url = URL.createObjectURL(blob);
+   const a = document.createElement('a');
+   a.href = url;
+   a.download = filename;
+   document.body.appendChild(a);
+   a.click();
+   setTimeout(() => {
+     URL.revokeObjectURL(url);
+     a.remove();
+   }, 300);
+ }
+
+ function getMousePosOnCanvas(canvas, evt) {
+   const rect = canvas.getBoundingClientRect();
+   const scaleX = canvas.width / Math.max(rect.width, 1);
+   const scaleY = canvas.height / Math.max(rect.height, 1);
+   return {
+     x: clamp(Math.round((evt.clientX - rect.left) * scaleX), 0, Math.max(canvas.width - 1, 0)),
+     y: clamp(Math.round((evt.clientY - rect.top) * scaleY), 0, Math.max(canvas.height - 1, 0))
+   };
+ }
+
+ function updateAllPreviews() {
+   const srcCtx = srcPreviewCanvas.getContext('2d');
+   if (srcLoaded) {
+     drawPreview(srcImage, srcPreviewCanvas, {
+       overlayRoi: true,
+       overlayTemplateRect: true,
+       sourceCanvas: true
+     });
+     fitCanvasToShell(srcPreviewCanvas, srcCanvasShell, srcPreviewCanvas.width, srcPreviewCanvas.height, 10);
+   } else {
+     srcPreviewCanvas.width = 1;
+     srcPreviewCanvas.height = 1;
+     srcCtx.clearRect(0, 0, 1, 1);
+   }
+
+   const tplCtx = tplPreviewCanvas.getContext('2d');
+   if (tplLoaded) {
+     drawPreview(tplImage, tplPreviewCanvas, {});
+     fitTemplateCanvas();
+   } else {
+     tplPreviewCanvas.width = 1;
+     tplPreviewCanvas.height = 1;
+     tplCtx.clearRect(0, 0, 1, 1);
+   }
+
+   setImageSizeBadge();
+   updateSourceControls();
+   refreshTemplateList();
+   updateTemplateStatus();
+ }
+
+ function getEffectiveCropRect() {
+   const cropOn = document.getElementById('argCropOn').checked;
+   if (!cropOn) return null;
+   const source = document.getElementById('argCropSource').value;
+   if (source === 'roi' && roi.w > 0 && roi.h > 0) {
+     return [roi.x, roi.y, roi.x + roi.w, roi.y + roi.h];
+   }
+   if (source === 'detected' && detectionOverlay.success && detectionOverlay.rect) {
+     const r = detectionOverlay.rect;
+     return [r.x, r.y, r.x + r.w, r.y + r.h];
+   }
+   if (source === 'manual') {
+     const raw = document.getElementById('argCropManual').value.split(',').map(v => parseInt(v.trim() || '0', 10));
+     if (raw.length >= 4) return raw.slice(0, 4);
+   }
+   return null;
+ }
+
+ function updatePythonPreview() {
+   const callTarget = document.getElementById('callTarget').value.trim() || 'self.isContainTemplate';
+   const args = [];
+   const tplPath = (document.getElementById('templatePathInput').value || 'template.png').trim() || 'template.png';
+   args.push(`template_path=${JSON.stringify(tplPath)}`);
+
+   if (document.getElementById('argThresholdOn').checked) {
+     args.push(`threshold=${document.getElementById('argThresholdValue').value}`);
+   }
+
+   const cropRect = getEffectiveCropRect();
+   if (document.getElementById('argCropOn').checked && cropRect) {
+     args.push(`crop=(${cropRect.join(', ')})`);
+   }
+
+   if (document.getElementById('argMaskPathOn').checked) {
+     const maskPath = document.getElementById('argMaskPathValue').value.trim();
+     if (maskPath) args.push(`mask_path=${JSON.stringify(maskPath)}`);
+   }
+
+   const boolArgMap = [
+     ['argUseGrayOn', 'argUseGrayValue', 'use_gray'],
+     ['argShowValueOn', 'argShowValueValue', 'show_value'],
+     ['argShowPositionOn', 'argShowPositionValue', 'show_position'],
+     ['argShowOnlyTrueRectOn', 'argShowOnlyTrueRectValue', 'show_only_true_rect']
+   ];
+   boolArgMap.forEach(([onId, valId, name]) => {
+     if (document.getElementById(onId).checked) args.push(`${name}=${document.getElementById(valId).value}`);
+   });
+   if (document.getElementById('argMsOn').checked) {
+     args.push(`ms=${document.getElementById('argMsValue').value}`);
+   }
+
+   const oneLine = `${callTarget}(${args.join(', ')})`;
+   document.getElementById('pythonOneLine').innerText = oneLine;
+   document.getElementById('pythonPreview').value = `${callTarget}(\n    ${args.join(',\n    ')}\n)`;
+
+   const active = currentTemplateEntry();
+   const src = currentSourceEntry();
+   const hintParts = [];
+   if (src) hintParts.push(`検索対象画像: ${src.name}`);
+   if (active) hintParts.push(`テンプレート: ${active.name}`);
+   if (document.getElementById('useRoi').checked && roi.w > 0 && roi.h > 0) hintParts.push(`ROI=(${roi.x}, ${roi.y}, ${roi.w}, ${roi.h})`);
+   if (detectionOverlay.success && detectionOverlay.rect) {
+     const r = detectionOverlay.rect;
+     hintParts.push(`検知結果=(${r.x}, ${r.y}, ${r.w}, ${r.h})`);
+   }
+   document.getElementById('codeHint').innerText = hintParts.length
+     ? hintParts.join(' / ')
+     : 'スクリーンショットの切替時も Python 呼び出し例を即時更新します。アクティブテンプレート名は template_path に自動反映されます。';
+ }
+
+ function scheduleDetection(reason = 'auto') {
+   if (detectTimer) clearTimeout(detectTimer);
+   updateAutoRunStatus(`自動検知待機中: ${reason}`);
+   detectTimer = setTimeout(() => {
+     detectTimer = null;
+     runDetection();
+   }, AUTO_RUN_DELAY);
+ }
+
+ async function switchSource(index, reason = 'スクリーンショット切替') {
+   if (index < 0 || index >= sourceEntries.length) return;
+   currentSourceIndex = index;
+   const entry = sourceEntries[index];
+   await loadImageFromDataUrl(srcImage, entry.dataUrl);
+   srcLoaded = true;
+   drawToHiddenCanvas(srcImage, 'srcCanvas');
+   clampRoiToCurrentImage();
+   clearDetectionOverlay();
+   updateAllPreviews();
+   updatePythonPreview();
+   scheduleDetection(reason);
+ }
+
+ async function switchTemplate(index, reason = 'テンプレート切替') {
+   if (index < 0 || index >= templateEntries.length) return;
+   activeTemplateIndex = index;
+   const entry = templateEntries[index];
+   await loadImageFromDataUrl(tplImage, entry.dataUrl);
+   tplLoaded = true;
+   drawToHiddenCanvas(tplImage, 'tplCanvas');
+   document.getElementById('templatePathInput').value = entry.name;
+   clearDetectionOverlay();
+   updateAllPreviews();
+   updatePythonPreview();
+   scheduleDetection(reason);
+ }
+
+ async function handleSourceFiles(files) {
+   const imageFiles = files.filter(f => (f.type || '').startsWith('image/'));
+   if (!imageFiles.length) {
+     setResult('画像ファイルを選択してください。', 'error');
+     return;
+   }
+   const loaded = await Promise.all(imageFiles.map(readImageFile));
+   sourceEntries.push(...loaded.map(item => ({ ...item })));
+   updateSourceControls();
+   if (currentSourceIndex < 0) await switchSource(0, 'スクリーンショット初回読込');
+   else await switchSource(sourceEntries.length - loaded.length, 'スクリーンショット追加');
+   setResult(`スクリーンショットを ${loaded.length} 枚追加しました。`, 'success');
+ }
+
+ async function handleTemplateFiles(files) {
+   const imageFiles = files.filter(f => (f.type || '').startsWith('image/'));
+   if (!imageFiles.length) {
+     setResult('画像ファイルを選択してください。', 'error');
+     return;
+   }
+   const loaded = await Promise.all(imageFiles.map(async file => {
+     const item = await readImageFile(file);
+     const probe = new Image();
+     await loadImageFromDataUrl(probe, item.dataUrl);
+     return {
+       ...item,
+       width: probe.naturalWidth || probe.width,
+       height: probe.naturalHeight || probe.height,
+       generated: false,
+       saveChecked: false
+     };
+   }));
+   const firstNewIndex = templateEntries.length;
+   templateEntries.push(...loaded);
+   templateManagerDetails.open = true;
+   if (activeTemplateIndex < 0) await switchTemplate(firstNewIndex, 'テンプレート初回読込');
+   else {
+     refreshTemplateList();
+     updateTemplateStatus();
+     updatePythonPreview();
+   }
+   setResult(`テンプレートを ${loaded.length} 件追加しました。`, 'success');
+ }
+
+ async function addGeneratedTemplateFromRect(rect) {
+   if (!srcLoaded || rect.w <= 0 || rect.h <= 0) return;
+   const hidden = document.getElementById('srcCanvas');
+   const temp = document.createElement('canvas');
+   temp.width = rect.w;
+   temp.height = rect.h;
+   const ctx = temp.getContext('2d');
+   ctx.drawImage(hidden, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+   const dataUrl = temp.toDataURL('image/png');
+   const name = `generated_template_${String(generatedTemplateCounter).padStart(3, '0')}.png`;
+   generatedTemplateCounter += 1;
+   templateEntries.push({ name, dataUrl, width: rect.w, height: rect.h, generated: true, saveChecked: false });
+   templateManagerDetails.open = true;
+   updateTemplateFoldMeta();
+   await switchTemplate(templateEntries.length - 1, 'Shift 切り出しテンプレート追加');
+   setResult(`テンプレートを作成しました: ${name}`, 'success');
+ }
+
+ async function saveSelectedTemplates() {
+   const selected = templateEntries.filter(t => t.saveChecked);
+   if (!selected.length) {
+     document.getElementById('codeHint').innerText = '保存対象のテンプレートが選択されていません。';
+     return;
+   }
+   if (selected.length === 1) {
+     downloadBlob(dataUrlToBlob(selected[0].dataUrl), selected[0].name || 'template.png');
+     document.getElementById('codeHint').innerText = `テンプレートを保存しました: ${selected[0].name}`;
+     return;
+   }
+   if (window.JSZip) {
+     const zip = new JSZip();
+     selected.forEach(t => zip.file(t.name || 'template.png', dataUrlToBlob(t.dataUrl)));
+     const blob = await zip.generateAsync({ type: 'blob' });
+     downloadBlob(blob, 'templates.zip');
+     document.getElementById('codeHint').innerText = `${selected.length} 件のテンプレートを ZIP 形式で保存しました。`;
+   } else {
+     selected.forEach((t, i) => setTimeout(() => downloadBlob(dataUrlToBlob(t.dataUrl), t.name || `template_${i+1}.png`), i * 200));
+     document.getElementById('codeHint').innerText = 'JSZip の読込前のため、個別ダウンロードに切り替えました。';
+   }
+ }
+
+ function clearTemplateSaveChecks() {
+   templateEntries.forEach(t => { t.saveChecked = false; });
+   refreshTemplateList();
+   document.getElementById('codeHint').innerText = '保存対象の選択をクリアしました。';
+ }
+
+ bindDropzone(document.getElementById('srcDrop'), document.getElementById('srcInput'), handleSourceFiles);
+ bindDropzone(document.getElementById('tplDrop'), document.getElementById('tplInput'), handleTemplateFiles);
+
+ document.getElementById('prevSourceBtn').addEventListener('click', async () => {
+   if (!sourceEntries.length) return;
+   const next = (currentSourceIndex - 1 + sourceEntries.length) % sourceEntries.length;
+   await switchSource(next, '前の画像へ切替');
+ });
+ document.getElementById('nextSourceBtn').addEventListener('click', async () => {
+   if (!sourceEntries.length) return;
+   const next = (currentSourceIndex + 1) % sourceEntries.length;
+   await switchSource(next, '次の画像へ切替');
+ });
+ sourceSelector.addEventListener('change', async () => {
+   const idx = parseInt(sourceSelector.value, 10);
+   if (!Number.isNaN(idx)) await switchSource(idx, 'セレクト切替');
+ });
+ templateManagerDetails.addEventListener('toggle', () => {
+   updateTemplateFoldMeta();
+   setTimeout(() => {
+     fitTemplateCanvas();
+     updateAllPreviews();
+   }, 0);
+ });
+
+ srcPreviewCanvas.addEventListener('mousemove', (e) => {
+      if (!srcLoaded) return;
+      const p = getMousePosOnCanvas(srcPreviewCanvas, e);
+      if (!interaction.active) { updateCursor(p, e); return; }
+      interaction.currentX = p.x;
+      interaction.currentY = p.y;
+      if (interaction.type === 'create-template') {
+        interaction.templateRect = normalizeRect({ x: interaction.startX, y: interaction.startY, w: p.x - interaction.startX, h: p.y - interaction.startY });
+        updateAllPreviews();
+        updatePythonPreview();
+        return;
+      }
+      if (interaction.type === 'create-roi') {
+        roi = constrainRectToImage(normalizeRect({ x: interaction.startX, y: interaction.startY, w: p.x - interaction.startX, h: p.y - interaction.startY }));
+        ensureCropCheckedForRoi();
+        setRoiInputs();
+        updateAllPreviews();
+        updatePythonPreview();
+        if (document.getElementById('useRoi').checked) scheduleDetection('ROI変更');
+        return;
+      }
+      if (interaction.type === 'move-roi') {
+        roi = moveRect(interaction.origRoi, p.x - interaction.startX, p.y - interaction.startY);
+        ensureCropCheckedForRoi();
+        setRoiInputs();
+        updateAllPreviews();
+        updatePythonPreview();
+        if (document.getElementById('useRoi').checked) scheduleDetection('ROI移動');
+        return;
+      }
+      if (interaction.type === 'resize-roi') {
+        roi = resizeRectFromHandle(interaction.origRoi, interaction.handle, p.x, p.y);
+        ensureCropCheckedForRoi();
+        setRoiInputs();
+        updateAllPreviews();
+        updatePythonPreview();
+        if (document.getElementById('useRoi').checked) scheduleDetection('ROIリサイズ');
+      }
+    });
+
+    srcPreviewCanvas.addEventListener('mousedown', (e) => {
+      if (!srcLoaded) return;
+      const p = getMousePosOnCanvas(srcPreviewCanvas, e);
+      interaction.active = true;
+      interaction.startX = p.x;
+      interaction.startY = p.y;
+      interaction.currentX = p.x;
+      interaction.currentY = p.y;
+      interaction.origRoi = { ...roi };
+      interaction.templateRect = null;
+      if (e.shiftKey) {
+        interaction.type = 'create-template';
+        setInteractionModeLabel('テンプレ切り出し中');
+        return;
+      }
+      const handle = hitTestHandle(p.x, p.y, roi);
+      if (handle) {
+        interaction.type = 'resize-roi';
+        interaction.handle = handle;
+        setInteractionModeLabel('ROIリサイズ中');
+        return;
+      }
+      if (isPointInRect(p.x, p.y, roi)) {
+        interaction.type = 'move-roi';
+        setInteractionModeLabel('ROI移動中');
+        return;
+      }
+      interaction.type = 'create-roi';
+      roi = { x: p.x, y: p.y, w: 0, h: 0 };
+      ensureCropCheckedForRoi();
+      setRoiInputs();
+      updateAllPreviews();
+      updatePythonPreview();
+      setInteractionModeLabel('ROI新規作成中');
+    });
+
+    window.addEventListener('mouseup', async () => {
+      if (!interaction.active) return;
+      if (interaction.type === 'create-template') {
+        const r = interaction.templateRect ? normalizeRect(interaction.templateRect) : null;
+        if (r && r.w >= MIN_BOX_SIZE && r.h >= MIN_BOX_SIZE) await addGeneratedTemplateFromRect(r);
+        interaction.templateRect = null;
+        updateAllPreviews();
+        updatePythonPreview();
+      } else if ((interaction.type === 'create-roi' || interaction.type === 'move-roi' || interaction.type === 'resize-roi') && document.getElementById('useRoi').checked) {
+        scheduleDetection('ROI確定');
+      }
+      interaction.active = false;
+      interaction.type = null;
+      interaction.handle = null;
+      interaction.origRoi = null;
+      setInteractionModeLabel('通常');
+      srcPreviewCanvas.style.cursor = 'crosshair';
+    });
+
+    ['roiX', 'roiY', 'roiW', 'roiH'].forEach(id => {
+      document.getElementById(id).addEventListener('input', () => {
+        if (!srcLoaded) return;
+        const iw = srcImage.naturalWidth || srcImage.width;
+        const ih = srcImage.naturalHeight || srcImage.height;
+        roi.x = clamp(parseInt(document.getElementById('roiX').value || '0', 10), 0, iw);
+        roi.y = clamp(parseInt(document.getElementById('roiY').value || '0', 10), 0, ih);
+        roi.w = clamp(parseInt(document.getElementById('roiW').value || '0', 10), 0, iw - roi.x);
+        roi.h = clamp(parseInt(document.getElementById('roiH').value || '0', 10), 0, ih - roi.y);
+        ensureCropCheckedForRoi();
+        setRoiInputs();
+        updateAllPreviews();
+        updatePythonPreview();
+        if (document.getElementById('useRoi').checked) scheduleDetection('ROI数値変更');
+      });
+    });
+
+    document.getElementById('clearRoiBtn').addEventListener('click', () => {
+      roi = { x: 0, y: 0, w: 0, h: 0 };
+      clearDetectionOverlay();
+      setRoiInputs();
+      updateAllPreviews();
+      updatePythonPreview();
+      scheduleDetection('ROIクリア');
+    });
+
+    document.getElementById('saveSelectedTemplatesBtn').addEventListener('click', saveSelectedTemplates);
+    document.getElementById('clearTemplateChecksBtn').addEventListener('click', clearTemplateSaveChecks);
+    document.getElementById('threshold').addEventListener('input', () => {
+      document.getElementById('argThresholdValue').value = document.getElementById('threshold').value;
+      scheduleDetection('しきい値変更');
+    });
+    document.getElementById('useRoi').addEventListener('change', () => {
+      updatePythonPreview();
+      scheduleDetection('ROI ON/OFF変更');
+    });
+    [
+      'callTarget', 'templatePathInput',
+      'argThresholdOn', 'argThresholdValue',
+      'argUseGrayOn', 'argUseGrayValue',
+      'argShowValueOn', 'argShowValueValue',
+      'argShowPositionOn', 'argShowPositionValue',
+      'argShowOnlyTrueRectOn', 'argShowOnlyTrueRectValue',
+      'argMsOn', 'argMsValue',
+      'argCropOn', 'argCropSource', 'argCropManual',
+      'argMaskPathOn', 'argMaskPathValue'
+    ].forEach(id => {
+      const el = document.getElementById(id);
+      const evt = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+      el.addEventListener(evt, updatePythonPreview);
+    });
+
+    toggleDrawerBtn.addEventListener('click', () => {
+      drawerOpen = !drawerOpen;
+      drawerDetails.classList.toggle('open', drawerOpen);
+      toggleDrawerBtn.innerText = drawerOpen ? '詳細を閉じる' : '詳細を開く';
+    });
+
+    async function copyText(text, okMessage) {
+      try {
+        await navigator.clipboard.writeText(text);
+        document.getElementById('codeHint').innerText = okMessage;
+        setTimeout(updatePythonPreview, 1200);
+      } catch (e) {
+        document.getElementById('codeHint').innerText = 'コピーに失敗しました。手動で選択してください。';
+      }
+    }
+    document.getElementById('copyOneLineBtn').addEventListener('click', () => { copyText(document.getElementById('pythonOneLine').innerText, '1行コードをクリップボードにコピーしました。'); });
+    document.getElementById('copyCodeBtn').addEventListener('click', () => { copyText(document.getElementById('pythonPreview').value, '整形版コードをクリップボードにコピーしました。'); });
+
+    window.addEventListener('resize', updateAllPreviews);
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => updateAllPreviews()).observe(srcCanvasShell);
+      new ResizeObserver(() => fitTemplateCanvas()).observe(tplPreviewCanvas.parentElement);
+    }
+
+    function onOpenCvReady() {
+      updateStatus('OpenCV.js の準備が完了しました。画像を読み込むと自動で検知を実行します。', true);
+      openCvReady = true;
+      updatePythonPreview();
+      scheduleDetection('OpenCV準備完了');
+    }
+
+    updatePythonPreview();
+    drawerDetails.classList.remove('open');
+    updateAllPreviews();
+    updateTemplateFoldMeta();
+  </script>
+  <script defer src="./vendor/opencv/opencv.js" onload="onOpenCvReady();" onerror="updateStatus('OpenCV.js のローカルファイルを読み込めませんでした。vendor/opencv/opencv.js を確認してください。', false);" type="text/javascript"></script>
+</body>
+</html>
