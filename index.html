@@ -7,7 +7,7 @@
 <!--
 DEV_NOTES_BEGIN
 Project: Image Match Tool for GitHub Pages
-Public Version: 1.0.0
+Public Version: 1.1.0
 Distribution Variant: Local-bundled vendor path mode
 Visibility: This block is intentionally hidden from the rendered page and retained in source for future maintenance.
 Primary Goals:
@@ -28,7 +28,7 @@ Suggested change log format for future edits:
   Version / Purpose / Major UI changes / Major JS changes / Known issues
 DEV_NOTES_END
 -->
-  <title>画像検知ツール v1.0</title>
+  <title>画像検知ツール v1.1</title>
   <style>
     :root {
       --bg: #f6f8fb;
@@ -717,6 +717,13 @@ DEV_NOTES_END
             </label>
           </div>
 
+          <div class="toggleRow">
+            <label class="toggleLabel" for="useGrayscale">
+              <input type="checkbox" id="useGrayscale">
+              グレースケールで検知する
+            </label>
+          </div>
+
           <div class="fieldGroup">
             <div class="fieldLabel">ROI座標（元画像ピクセル）</div>
             <div class="inputRow">
@@ -1167,6 +1174,19 @@ DEV_NOTES_END
       canvas.height = ih;
       ctx.clearRect(0, 0, iw, ih);
       ctx.drawImage(imgObj, 0, 0);
+
+      // グレースケール表示の適用（RGBA順序 - OpenCV.js COLOR_RGBA2GRAYと対応）
+      if (sourceCanvas && document.getElementById('useGrayscale').checked) {
+        const imageData = ctx.getImageData(0, 0, iw, ih);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          const gray = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+          data[i] = gray;
+          data[i + 1] = gray;
+          data[i + 2] = gray;
+        }
+        ctx.putImageData(imageData, 0, 0);
+      }
       if (sourceCanvas) {
         if (detectionOverlay.active && detectionOverlay.roiRect) {
           const rr = detectionOverlay.roiRect;
@@ -1225,6 +1245,7 @@ DEV_NOTES_END
       }
       const threshold = parseFloat(document.getElementById('threshold').value);
       const useRoi = document.getElementById('useRoi').checked;
+      const useGrayscale = document.getElementById('useGrayscale').checked;
       const sw = srcImage.naturalWidth || srcImage.width;
       const sh = srcImage.naturalHeight || srcImage.height;
       const tw = tplImage.naturalWidth || tplImage.width;
@@ -1242,10 +1263,18 @@ DEV_NOTES_END
         updateAutoRunStatus('検知実行中...');
         src = cv.imread('srcCanvas');
         templ = cv.imread('tplCanvas');
-        srcGray = new cv.Mat();
-        templGray = new cv.Mat();
-        cv.cvtColor(src, srcGray, cv.COLOR_RGBA2GRAY, 0);
-        cv.cvtColor(templ, templGray, cv.COLOR_RGBA2GRAY, 0);
+        
+        if (useGrayscale) {
+          // グレースケール検知
+          srcGray = new cv.Mat();
+          templGray = new cv.Mat();
+          cv.cvtColor(src, srcGray, cv.COLOR_RGBA2GRAY, 0);
+          cv.cvtColor(templ, templGray, cv.COLOR_RGBA2GRAY, 0);
+        } else {
+          // カラー検知（RGBA画像をそのまま使用）
+          srcGray = src;
+          templGray = templ;
+        }
         let offsetX = 0, offsetY = 0;
         if (useRoi) {
           if (roi.w <= 0 || roi.h <= 0) {
@@ -1287,17 +1316,18 @@ DEV_NOTES_END
         detectionOverlay.active = true;
         detectionOverlay.score = maxVal;
         detectionOverlay.roiRect = useRoi ? { ...roi } : null;
+        const grayscaleLabel = useGrayscale ? '\n（グレースケール検知）' : '';
         if (maxVal >= threshold) {
           detectionOverlay.success = true;
           detectionOverlay.rect = { x: xstart, y: ystart, w: templGray.cols, h: templGray.rows };
           updateAllPreviews();
-          setResult(`🎯 検知成功！\n一致度: ${(maxVal * 100).toFixed(1)}%\nOpenCV crop 座標: (${xstart}, ${ystart}, ${xend}, ${yend})\n\nPython(OpenCV):\ncrop = img[${ystart}:${yend}, ${xstart}:${xend}]`, 'success');
+          setResult(`🎯 検知成功！${grayscaleLabel}\n一致度: ${(maxVal * 100).toFixed(1)}%\nOpenCV crop 座標: (${xstart}, ${ystart}, ${xend}, ${yend})\n\nPython(OpenCV):\ncrop = img[${ystart}:${yend}, ${xstart}:${xend}]`, 'success');
           updateAutoRunStatus(`検知成功 (${(maxVal * 100).toFixed(1)}%)`);
         } else {
           detectionOverlay.success = false;
           detectionOverlay.rect = null;
           updateAllPreviews();
-          setResult(`❌ 検知失敗...\n最大一致度: ${(maxVal * 100).toFixed(1)}%\n設定しきい値: ${(threshold * 100).toFixed(1)}%`, 'error');
+          setResult(`❌ 検知失敗...${grayscaleLabel}\n最大一致度: ${(maxVal * 100).toFixed(1)}%\n設定しきい値: ${(threshold * 100).toFixed(1)}%`, 'error');
           updateAutoRunStatus(`検知失敗 (${(maxVal * 100).toFixed(1)}%)`);
         }
         updatePythonPreview();
@@ -1761,6 +1791,10 @@ DEV_NOTES_END
     document.getElementById('useRoi').addEventListener('change', () => {
       updatePythonPreview();
       scheduleDetection('ROI ON/OFF変更');
+    });
+    document.getElementById('useGrayscale').addEventListener('change', () => {
+      updateAllPreviews();
+      scheduleDetection('グレースケール表示切替');
     });
     [
       'callTarget', 'templatePathInput',
