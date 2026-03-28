@@ -7,7 +7,7 @@
 <!--
 DEV_NOTES_BEGIN
 Project: Image Match Tool for GitHub Pages
-Public Version: 1.1.0
+Public Version: 1.2.0
 Distribution Variant: Local-bundled vendor path mode
 Visibility: This block is intentionally hidden from the rendered page and retained in source for future maintenance.
 Primary Goals:
@@ -28,7 +28,7 @@ Suggested change log format for future edits:
   Version / Purpose / Major UI changes / Major JS changes / Known issues
 DEV_NOTES_END
 -->
-  <title>画像検知ツール v1.1</title>
+  <title>画像検知ツール v1.2</title>
   <style>
     :root {
       --bg: #f6f8fb;
@@ -802,7 +802,7 @@ DEV_NOTES_END
           <div class="advancedBody">
             <div class="fieldGroup">
               <label class="fieldLabel row"><input type="checkbox" id="argUseGrayOn" checked> use_gray <span class="miniNote">bool</span></label>
-              <select id="argUseGrayValue"><option value="True" selected>True</option><option value="False">False</option></select>
+              <select id="argUseGrayValue"><option value="True">True</option><option value="False" selected>False</option></select>
             </div>
             <div class="fieldGroup">
               <label class="fieldLabel row"><input type="checkbox" id="argShowValueOn" checked> show_value <span class="miniNote">bool</span></label>
@@ -1078,6 +1078,12 @@ DEV_NOTES_END
     }
     function ensureCropCheckedForRoi() {
       if (roi.w > 0 && roi.h > 0) {
+        // ROI作成時にuseRoiチェックボックスを自動的にオンにする
+        const useRoi = document.getElementById('useRoi');
+        if (!useRoi.checked) {
+          useRoi.checked = true;
+        }
+        // Python呼び出しのcropオプションもオンにする
         const cropOn = document.getElementById('argCropOn');
         if (!cropOn.checked) {
           cropOn.checked = true;
@@ -1793,6 +1799,9 @@ DEV_NOTES_END
       scheduleDetection('ROI ON/OFF変更');
     });
     document.getElementById('useGrayscale').addEventListener('change', () => {
+      // Python出力のuse_grayの値を更新（チェックボックスは同期しない）
+      const useGrayscale = document.getElementById('useGrayscale').checked;
+      document.getElementById('argUseGrayValue').value = useGrayscale ? 'True' : 'False';
       updateAllPreviews();
       scheduleDetection('グレースケール表示切替');
     });
